@@ -5,7 +5,8 @@ from filterpy.kalman import MerweScaledSigmaPoints
 import matplotlib.pyplot as plt
 from copy import deepcopy
 
-
+### In Camera Coordinate System ###
+# x = x y = -z z = y
 np.set_printoptions(precision=2, suppress=True)
 
 with open('blender_data.pickle', 'rb') as fd:
@@ -17,10 +18,11 @@ with open('tracking_data.pickle','rb') as fd:
 camera_data = blender_data['camera_data']
 A = camera_data['A']
 RT = camera_data['RT']
+R = RT[:, :3] # Camera Rotation 
 fps = camera_data['fps']
 cam_positions = blender_data['location_data']
 real_ped_position = blender_data['pedestrian_pos']
-pedestrian_height = blender_data['pedestrian_height']
+pedestrian_height = blender_data['pedestrian_height'] 
 dt = 1/fps
 
 center_points = tracking_data['center_points']
@@ -34,55 +36,78 @@ for i in range(1, len(cam_positions)):
     vx = (x - x_prev) / dt
     vy = (y - y_prev) / dt
     vz = (z - z_prev) / dt
-    velocities.append([vx, vy, vz])
+    vel = np.array([vx, vy, vz])
+    velocities.append(vel)
 
-def f_cv(x,dt):
+real_ped_vel = [[0,0,0]]
+for i in range(1, len(real_ped_position)):
+    x, y, z = real_ped_position[i]
+    x_prev, y_prev, z_prev = real_ped_position[i-1]
+    vx = (x - x_prev) / dt
+    vy = (y - y_prev) / dt
+    vz = (z - z_prev) / dt
+    vel = np.array([vx,vy,vz])
+    real_ped_vel.append(vel)
+
+
+def f_cv(x,dt,control_input):
     # position and velocity relative to the camera
     px,vx,py,vy,pz,vz,h = x
-    px = px + dt * vx
-    py = py + dt * vy
-    pz = pz + dt * vz  
+    # distance car moved in the time dt
+    car_x = control_input[0] * dt 
+    car_y = control_input[1] * dt 
+    car_z = control_input[2] * dt
+    px = px + dt * vx - car_x
+    py = py + dt * vy - car_y 
+    pz = pz + dt * vz - car_z
     h = pedestrian_height
     return np.array([px,vx,py,vy,pz,vz,h])
  
-def calcHeightOfPedestrian(pCenter_World, pedestrian_height, A, RT):
-    assert(len(pCenter_World) == 4 and pCenter_World[3] == 1)  
-    assert(RT.shape == (3, 4))  
+def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
+    # Corrdintes flipped by R
+    assert(R.shape == (3, 3))  
     assert(A.shape == (3, 3))  
 
-    pCenter_Camera =  pCenter_World  
-    
-    top_p = np.array([pCenter_Camera[0], pCenter_Camera[1], pCenter_Camera[2] + pedestrian_height/2,1])  
-    bottom_p = np.array([pCenter_Camera[0], pCenter_Camera[1], pCenter_Camera[2] - pedestrian_height/2,1])   
-    
-    top_p_2D = A @ (RT@top_p)
-    bottom_p_2D = A @ (RT@bottom_p)
+    top_p = np.array([p_camera[0], p_camera[1] + pedestrian_height/2 , p_camera[2] ])  
+    bottom_p = np.array([p_camera[0], p_camera[1] - pedestrian_height/2 ,p_camera[2] ])   
+    #print(f"top: {top_p} bot: {bottom_p}")
+    top_p_2D = A @ top_p
+    bottom_p_2D = A @ bottom_p
 
     top_p_2D /= top_p_2D[2]
     bottom_p_2D /= bottom_p_2D[2]
+    #print(top_p_2D, bottom_p_2D)
     height_2D = np.sqrt(np.sum((top_p_2D[:2] - bottom_p_2D[:2]) ** 2)) 
+    #print(f"h: {height_2D}")
     return height_2D
     
 def h_cv(x):    
     px,vxp,py,vyp,pz,vzp,h = x
     # world is in reality Camera world coordinates
-    p_world =  np.array([px,py,pz,1])
-    p0_Camera = RT @ p_world
-    p0_2D = A @ p0_Camera
+
+    p_camera = R @ np.array([px,py,pz]) 
+    #print(p_camera)
+    p0_2D = A @ p_camera
+
     p0_2D = p0_2D / p0_2D[2]
     cx = p0_2D[0]
     cy = p0_2D[1]
+    #print(f"cx: {cx}, cy: {cy}")
+    ph = calcHeightOfPedestrian(p_camera,h,A,R)
+    return np.array([cx,cy,ph])
 
-    ph = calcHeightOfPedestrian(p_world,h,A,RT)
-    
-    return np.array([cx,cy,ph,vxp,vyp,vzp])
+
+test = np.array([7,0,90,0,0,0,1.8])
+print(f"test:{h_cv(test)}")
+test = np.array([2.9,0,89-45.5,0,-0.1,0,1.8])
+print(f"test:{h_cv(test)}")
 
 sigmas = MerweScaledSigmaPoints(7,alpha=.1, beta=2, kappa=-4)
-ukf = UKF(dim_x=7,dim_z=6,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
-ukf.R = np.diag([2**2,2**2,6**2,0.1**2,0.1**2,0.1**2])
+ukf = UKF(dim_x=7,dim_z=3,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
+ukf.R = np.diag([2**2,2**2,8**2])
 
-std_pos = 0.6
-std_vel = 0.01
+std_pos = 0.5 #0.75
+std_vel = 0.5
 std_h = 0.0000001
 
 Q = np.zeros((7,7))
@@ -107,7 +132,6 @@ N = len(velocities)
 ukf.Q = Q
 ukf.P = P
 ukf.x = [0,0,10,0,0,0,0]
-xs = [] 
 filter_results = [] 
 Phat = []
 collision = np.full(N,False)
@@ -117,18 +141,16 @@ def calculate_world_position(filter_values, camera_pos):
     wp = camera_pos + relative_pos
     return wp
 
-
 for n in range(N):
-    camera_pos = np.array(cam_positions[n])
-    # height of camera set to 0 to better calculate world pos of pedestrian
-    camera_pos[2] = 0
-    vx,vy,vz = velocities[n]
-    
-    ukf.predict()
+    # only for visualisation
+    camera_pos = np.array(cam_positions[n]) 
+    c = np.array(velocities[n])
+    ukf.predict(control_input=c)
     ukf_prediction = deepcopy(ukf)
-    
+    x = ukf.x.copy()
+    P = ukf.P.copy()
     for r in range(N-n):
-        ukf_prediction.predict()
+        ukf_prediction.predict(control_input=c)
         x_pred = ukf_prediction.x.copy()
         P_pred = ukf_prediction.P.copy()
         std_for_x = np.sqrt(P[0,0])
@@ -140,14 +162,17 @@ for n in range(N):
             #print(f"Collision at n: {n}, r: {r} n+r: {n+r} world position: {wp} x: {std_for_x:.2f} y: {std_for_y:.2f}")
             collision[n] = True
             break
-
-    x = ukf.x.copy()
-    xs.append(x)
-    P = ukf.P.copy()
     # calculate the world position of the pedestrian 
     wp = calculate_world_position(x, camera_pos)
+    # print(f"---- n: {n} ----")
+    # print(f"vx: {x[1]:.2f} vy: {x[3]:.2f} vz: {x[5]:.2f}")
+    # print(f"px: {x[0]:.2f} py: {x[2]:.2f} pz: {x[4]:.2f}")
+    # print(f"Phat: {P}")
     filter_results.append(np.array([wp[0],x[1],wp[1],x[3],wp[2],x[5],x[6]]))
     Phat.append(P)
+
+    if n > 100 and n < 130:
+        continue
 
     # update filter 
     if center_points[n] == None:
@@ -156,17 +181,11 @@ for n in range(N):
         x_screen, y_screen = center_points[n]
     h = heights[n]
 
-    #update velocity based on filter results  
-    x_pos = x[0]
-    x_pos_prev = xs[n-1][0]
-    vx = (x_pos - x_pos_prev) / dt
-    # y_pos = x[2]
-    # y_pos_prev = xs[n-1][2]
-    # vy = (y_pos - y_pos_prev) / dt
-    # -v because pedestrian is moving towards the camera  
-    m = [x_screen,y_screen,h,vx,-vy,vz]
+    m = [x_screen,y_screen,h]
     ukf.update(z=m)
 
+# ignore first collision predictions 
+collision[0:3] = False
 filter_results_vals = [v.tolist() for v in filter_results]
 phat_vals = [v.tolist() for v in Phat]
 
@@ -180,9 +199,9 @@ with open('Filter_Output.pickle', 'wb') as fd:
     pickle.dump(result, fd)
     print("pickled")
 
-####### Plotting #######
+# # ####### Plotting #######
 
-def check_for_collision(real_cam_pos, real_ped_pos,threshold=0.5):
+def check_for_collision(real_cam_pos, real_ped_pos,threshold=1):
     for i in range(len(real_cam_pos)):
         dx = abs(real_cam_pos[i][0] - real_ped_pos[i][0])
         dy = abs(real_cam_pos[i][1] - real_ped_pos[i][1])
@@ -193,41 +212,64 @@ def check_for_collision(real_cam_pos, real_ped_pos,threshold=0.5):
 filter_results = np.array(filter_results)
 phat = np.array(phat_vals)
 real_ped_position = np.array(real_ped_position)
+real_ped_vel = np.array(real_ped_vel)
 
 collision_idx = check_for_collision(cam_positions, real_ped_position)
 showplots = 1
-end_point = 250
+end_point = 250  # Limit number of points shown for clarity
 if showplots == 1:
-    fig, axes = plt.subplots(5, 1, figsize=(8, 8), sharex=True)  
+    fig, axes = plt.subplots(4, 2, figsize=(12, 12), sharex=True)  
 
     axes_labels = ['x-axis', 'y-axis', 'z-axis', 'height']
-    for axis in range(4): 
-        if axis < 3:
-            real_val = real_ped_position[:end_point,axis]
+    vel_labels = ['vx', 'vy', 'vz']
+    
+    # Position and height plots
+    for i in range(4): 
+        if i < 3:
+            real_val = real_ped_position[:end_point, i]
         else:
             real_val = pedestrian_height
-        residuals = real_val - filter_results[:end_point, 2 * axis]
-        phat_axis = np.sqrt(phat[:end_point, 2 * axis, 2 * axis])
+        residuals = real_val - filter_results[:end_point, 2 * i]
+        phat_axis = np.sqrt(phat[:end_point, 2 * i, 2 * i])
         
-        axes[axis].plot(residuals, label='Residuals', color='blue')
-        axes[axis].plot(phat_axis, label='Standard Deviation', color='orange')
-        axes[axis].plot(-phat_axis, color='orange', linestyle='--')
+        ax = axes[i, 0]
+        ax.plot(residuals, label='Residuals', color='blue')
+        ax.plot(phat_axis, label='Standard Deviation', color='orange')
+        ax.plot(-phat_axis, color='orange', linestyle='--')
         
-        axes[axis].set_title(f'Residuals and Uncertainty ({axes_labels[axis]})')
-        axes[axis].set_ylabel('Difference')
-        axes[axis].grid(True)
-        
+        ax.set_ylim(-6, 6)
+        ax.set_title(f'Residuals and Uncertainty ({axes_labels[i]})')
+        ax.set_ylabel('Difference')
+        ax.grid(True)
 
-    axes[0].legend()
-    axes[4].plot(collision[:end_point], label='Collision Prediction', color='blue')
-    axes[4].set_title('Collision Prediction')
-    if collision_idx != None:
-        axes[4].axvline(collision_idx, color='red', linestyle='--', label='Collision')
-    axes[4].legend()
-
+    # Velocity plots
+    for i in range(3):
+        real_vel = real_ped_vel[:end_point, i]
+        residuals_vel = real_vel - filter_results[:end_point, 2 * i + 1]
+        phat_axis_vel = np.sqrt(phat[:end_point, 2 * i + 1, 2 * i + 1])
+        
+        ax = axes[i, 1]
+        ax.plot(residuals_vel, label='Velocity Residuals', color='blue')
+        ax.plot(phat_axis_vel, label='Standard Deviation', color='orange')
+        ax.plot(-phat_axis_vel, color='orange', linestyle='--')
+        
+        ax.set_ylim(-5, 5)
+        ax.set_title(f'Velocity Residuals and Uncertainty ({vel_labels[i]})')
+        ax.set_ylabel('Difference')
+        ax.grid(True)
     
+    # Collision prediction
+    axes[3, 1].plot(collision[:end_point], label='Collision Prediction', color='blue')
+    axes[3, 1].set_title('Collision Prediction')
+    if collision_idx is not None:
+        axes[3, 1].axvline(collision_idx, color='red', linestyle='--', label='Collision')
+    axes[3, 1].legend() 
+    axes[3, 1].grid(True)
+    
+    axes[0, 0].legend()
+    
+    # Hide unused subplots if any
+    axes[3, 0].axis('off')
+
     plt.tight_layout()
     plt.show()
-
-# test = np.array([7,0,90,0,0,0,3.8])
-# print(h_cv(test))
