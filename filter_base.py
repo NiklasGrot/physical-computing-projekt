@@ -20,7 +20,7 @@ A = camera_data['A']
 RT = camera_data['RT']
 R = RT[:, :3] # Camera Rotation 
 fps = camera_data['fps']
-cam_positions = blender_data['location_data']
+cam_positions = blender_data['car_pos']
 real_ped_position = blender_data['pedestrian_pos']
 pedestrian_height = blender_data['pedestrian_height'] 
 dt = 1/fps
@@ -30,12 +30,13 @@ heights = tracking_data['heights']
 
 assert(len(center_points) == len(heights) and len(cam_positions) == len(center_points))
 velocities = [[0,0,0]]
+std_c = 0.8 # ca. 3km/h
 for i in range(1, len(cam_positions)):
     x, y, z = cam_positions[i]
     x_prev, y_prev, z_prev = cam_positions[i-1]
-    vx = (x - x_prev) / dt
-    vy = (y - y_prev) / dt
-    vz = (z - z_prev) / dt
+    vx = (x - x_prev) / dt + np.random.normal(0,std_c)
+    vy = (y - y_prev) / dt + np.random.normal(0,std_c)
+    vz = (z - z_prev) / dt + np.random.normal(0,std_c)
     vel = np.array([vx, vy, vz])
     velocities.append(vel)
 
@@ -52,16 +53,19 @@ for i in range(1, len(real_ped_position)):
 
 def f_cv(x,dt,control_input):
     # position and velocity relative to the camera
-    px,vx,py,vy,pz,vz,h = x
+    px,vx,py,vy,pz,vz,h,cx,cy,cz = x
+    cx = control_input[0]
+    cy = control_input[1]
+    cz = control_input[2]
     # distance car moved in the time dt
-    car_x = control_input[0] * dt 
-    car_y = control_input[1] * dt 
-    car_z = control_input[2] * dt
+    car_x = cx * dt 
+    car_y = cy * dt 
+    car_z = cz * dt
     px = px + dt * vx - car_x
     py = py + dt * vy - car_y 
     pz = pz + dt * vz - car_z
     h = pedestrian_height
-    return np.array([px,vx,py,vy,pz,vz,h])
+    return np.array([px,vx,py,vy,pz,vz,h,cx,cy,cz])
  
 def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
     # Corrdintes flipped by R
@@ -82,11 +86,9 @@ def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
     return height_2D
     
 def h_cv(x):    
-    px,vxp,py,vyp,pz,vzp,h = x
+    px,vxp,py,vyp,pz,vzp,h, cx,cy,cz = x
     # world is in reality Camera world coordinates
-
     p_camera = R @ np.array([px,py,pz]) 
-    #print(p_camera)
     p0_2D = A @ p_camera
 
     p0_2D = p0_2D / p0_2D[2]
@@ -97,20 +99,19 @@ def h_cv(x):
     return np.array([cx,cy,ph])
 
 
-test = np.array([7,0,90,0,0,0,1.8])
-print(f"test:{h_cv(test)}")
-test = np.array([2.9,0,89-45.5,0,-0.1,0,1.8])
-print(f"test:{h_cv(test)}")
+# test = np.array([7,0,90,0,0,0,1.8])
+# print(f"test:{h_cv(test)}")
 
-sigmas = MerweScaledSigmaPoints(7,alpha=.1, beta=2, kappa=-4)
-ukf = UKF(dim_x=7,dim_z=3,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
+sigmas = MerweScaledSigmaPoints(10,alpha=.1, beta=2, kappa=-4)
+ukf = UKF(dim_x=10,dim_z=3,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
 ukf.R = np.diag([2**2,2**2,8**2])
 
-std_pos = 0.5 #0.75
+std_pos = 0.5 
 std_vel = 0.5
-std_h = 0.0000001
+std_h = 0.00001
+std_c = 0.8
 
-Q = np.zeros((7,7))
+Q = np.zeros((10,10))
 Q[0,0] = std_pos**2
 Q[1,1] = std_vel**2
 Q[2,2] = std_pos**2
@@ -118,8 +119,11 @@ Q[3,3] = std_vel**2
 Q[4,4] = std_pos**2
 Q[5,5] = std_vel**2
 Q[6,6] = std_h**2
+Q[7,7] = std_c**2
+Q[8,8] = std_c**2
+Q[9,9] = std_c**2
 
-P = np.zeros((7,7))
+P = np.zeros((10,10))
 P[0,0] = 10**2
 P[1,1] = 0.5**2
 P[2,2] = 50**2
@@ -127,11 +131,14 @@ P[3,3] = 0.5**2
 P[4,4] = 5**2
 P[5,5] = 0.5**2
 P[6,6] = 0.25**2
+P[7,7] = 1**2
+P[8,8] = 1**2
+P[9,9] = 1**2
 
 N = len(velocities)
 ukf.Q = Q
 ukf.P = P
-ukf.x = [0,0,10,0,0,0,0]
+ukf.x = [0,0,10,0,0,0,0,0,0,0]
 filter_results = [] 
 Phat = []
 collision = np.full(N,False)
@@ -185,7 +192,7 @@ for n in range(N):
     ukf.update(z=m)
 
 # ignore first collision predictions 
-collision[0:3] = False
+collision[0:5] = False
 filter_results_vals = [v.tolist() for v in filter_results]
 phat_vals = [v.tolist() for v in Phat]
 
@@ -269,7 +276,7 @@ if showplots == 1:
     axes[0, 0].legend()
     
     # Hide unused subplots if any
-    axes[3, 0].axis('off')
+    # axes[3, 0].axis('off')
 
     plt.tight_layout()
     plt.show()
