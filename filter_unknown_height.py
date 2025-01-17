@@ -64,7 +64,7 @@ def f_cv(x,dt,control_input):
     px = px + dt * vx - car_x
     py = py + dt * vy - car_y 
     pz = pz + dt * vz - car_z
-    h = pedestrian_height
+
     return np.array([px,vx,py,vy,pz,vz,h,cx,cy,cz])
  
 def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
@@ -108,7 +108,7 @@ ukf.R = np.diag([2**2,2**2,8**2])
 
 std_pos = 0.5 
 std_vel = 0.5
-std_h = 0.00001
+std_h = 0.2
 std_c = 0.8
 
 Q = np.zeros((10,10))
@@ -138,7 +138,7 @@ P[9,9] = 1**2
 N = len(velocities)
 ukf.Q = Q
 ukf.P = P
-ukf.x = [0,0,10,0,0,0,0,0,0,0]
+ukf.x = [0,0,10,0,0,0,1.7,0,0,0]
 filter_results = [] 
 Phat = []
 collision = np.full(N,False)
