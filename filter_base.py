@@ -29,16 +29,14 @@ center_points = tracking_data['center_points']
 heights = tracking_data['heights']
 
 assert(len(center_points) == len(heights) and len(cam_positions) == len(center_points))
-velocities = [[0,0,0]]
+velocities = [0]
 std_c = 0.8 # ca. 3km/h
 for i in range(1, len(cam_positions)):
-    x, y, z = cam_positions[i]
-    x_prev, y_prev, z_prev = cam_positions[i-1]
-    vx = (x - x_prev) / dt + np.random.normal(0,std_c)
+    _, y, _ = cam_positions[i]
+    _, y_prev, _ = cam_positions[i-1]
     vy = (y - y_prev) / dt + np.random.normal(0,std_c)
-    vz = (z - z_prev) / dt + np.random.normal(0,std_c)
-    vel = np.array([vx, vy, vz])
-    velocities.append(vel)
+    print((y - y_prev) / dt)
+    velocities.append(vy)
 
 real_ped_vel = [[0,0,0]]
 for i in range(1, len(real_ped_position)):
@@ -50,30 +48,25 @@ for i in range(1, len(real_ped_position)):
     vel = np.array([vx,vy,vz])
     real_ped_vel.append(vel)
 
-
 def f_cv(x,dt,control_input):
     # position and velocity relative to the camera
-    px,vx,py,vy,pz,vz,h,cx,cy,cz = x
-    cx = control_input[0]
-    cy = control_input[1]
-    cz = control_input[2]
+    px,vx,py,vy,pz,vz,h,cy = x
+    cy = control_input
     # distance car moved in the time dt
-    car_x = cx * dt 
     car_y = cy * dt 
-    car_z = cz * dt
-    px = px + dt * vx - car_x
+    px = px + dt * vx 
     py = py + dt * vy - car_y 
-    pz = pz + dt * vz - car_z
+    pz = pz + dt * vz 
     h = pedestrian_height
-    return np.array([px,vx,py,vy,pz,vz,h,cx,cy,cz])
+    return np.array([px,vx,py,vy,pz,vz,h,cy])
  
 def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
-    # Corrdintes flipped by R
+    # Corrdinates flipped by R
     assert(R.shape == (3, 3))  
     assert(A.shape == (3, 3))  
 
-    top_p = np.array([p_camera[0], p_camera[1] + pedestrian_height/2 , p_camera[2] ])  
-    bottom_p = np.array([p_camera[0], p_camera[1] - pedestrian_height/2 ,p_camera[2] ])   
+    top_p = np.array([p_camera[0], p_camera[1] + pedestrian_height/2 , p_camera[2]])  
+    bottom_p = np.array([p_camera[0], p_camera[1] - pedestrian_height/2 ,p_camera[2]])   
     #print(f"top: {top_p} bot: {bottom_p}")
     top_p_2D = A @ top_p
     bottom_p_2D = A @ bottom_p
@@ -86,7 +79,7 @@ def calcHeightOfPedestrian(p_camera, pedestrian_height, A, R):
     return height_2D
     
 def h_cv(x):    
-    px,vxp,py,vyp,pz,vzp,h, cx,cy,cz = x
+    px,vxp,py,vyp,pz,vzp,h,car_vy = x
     # world is in reality Camera world coordinates
     p_camera = R @ np.array([px,py,pz]) 
     p0_2D = A @ p_camera
@@ -98,20 +91,19 @@ def h_cv(x):
     ph = calcHeightOfPedestrian(p_camera,h,A,R)
     return np.array([cx,cy,ph])
 
-
 # test = np.array([7,0,90,0,0,0,1.8])
 # print(f"test:{h_cv(test)}")
 
-sigmas = MerweScaledSigmaPoints(10,alpha=.1, beta=2, kappa=-4)
-ukf = UKF(dim_x=10,dim_z=3,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
+sigmas = MerweScaledSigmaPoints(8,alpha=.1, beta=2, kappa=-4)
+ukf = UKF(dim_x=8,dim_z=3,fx=f_cv, hx=h_cv, dt=dt, points=sigmas)
 ukf.R = np.diag([2**2,2**2,8**2])
 
 std_pos = 0.5 
-std_vel = 0.5
+std_vel = 0.35
 std_h = 0.00001
-std_c = 0.8
+std_c = std_c
 
-Q = np.zeros((10,10))
+Q = np.zeros((8,8))
 Q[0,0] = std_pos**2
 Q[1,1] = std_vel**2
 Q[2,2] = std_pos**2
@@ -120,25 +112,21 @@ Q[4,4] = std_pos**2
 Q[5,5] = std_vel**2
 Q[6,6] = std_h**2
 Q[7,7] = std_c**2
-Q[8,8] = std_c**2
-Q[9,9] = std_c**2
 
-P = np.zeros((10,10))
+P = np.zeros((8,8))
 P[0,0] = 10**2
-P[1,1] = 0.5**2
+P[1,1] = 3**2
 P[2,2] = 50**2
-P[3,3] = 0.5**2
+P[3,3] = 10**2
 P[4,4] = 5**2
-P[5,5] = 0.5**2
+P[5,5] = 3**2
 P[6,6] = 0.25**2
 P[7,7] = 1**2
-P[8,8] = 1**2
-P[9,9] = 1**2
 
 N = len(velocities)
 ukf.Q = Q
 ukf.P = P
-ukf.x = [0,0,10,0,0,0,0,0,0,0]
+ukf.x = [0,0,10,0,0,0,0,0]
 filter_results = [] 
 Phat = []
 collision = np.full(N,False)
@@ -178,8 +166,8 @@ for n in range(N):
     filter_results.append(np.array([wp[0],x[1],wp[1],x[3],wp[2],x[5],x[6]]))
     Phat.append(P)
 
-    if n > 100 and n < 130:
-        continue
+    # if n > 100 and n < 125:
+    #     continue
 
     # update filter 
     if center_points[n] == None:
@@ -228,25 +216,27 @@ if showplots == 1:
     fig, axes = plt.subplots(4, 2, figsize=(12, 12), sharex=True)  
 
     axes_labels = ['x-axis', 'y-axis', 'z-axis', 'height']
-    vel_labels = ['vx', 'vy', 'vz']
+    vel_labels = ['x-axis', 'y-axis', 'z-axis']
     
     # Position and height plots
     for i in range(4): 
+        ax = axes[i, 0]
         if i < 3:
             real_val = real_ped_position[:end_point, i]
+            ax.set_title(f'Position ({axes_labels[i]})')
         else:
             real_val = pedestrian_height
+            ax.set_title('Height')
         residuals = real_val - filter_results[:end_point, 2 * i]
         phat_axis = np.sqrt(phat[:end_point, 2 * i, 2 * i])
         
-        ax = axes[i, 0]
-        ax.plot(residuals, label='Residuals', color='blue')
-        ax.plot(phat_axis, label='Standard Deviation', color='orange')
+        ax.plot(residuals, label='x', color='blue')
+        ax.plot(phat_axis, label='Phat', color='orange')
         ax.plot(-phat_axis, color='orange', linestyle='--')
         
         ax.set_ylim(-6, 6)
-        ax.set_title(f'Residuals and Uncertainty ({axes_labels[i]})')
-        ax.set_ylabel('Difference')
+        
+        ax.set_ylabel('Difference [m]')
         ax.grid(True)
 
     # Velocity plots
@@ -261,8 +251,8 @@ if showplots == 1:
         ax.plot(-phat_axis_vel, color='orange', linestyle='--')
         
         ax.set_ylim(-5, 5)
-        ax.set_title(f'Velocity Residuals and Uncertainty ({vel_labels[i]})')
-        ax.set_ylabel('Difference')
+        ax.set_title(f'Velocity ({vel_labels[i]})')
+        ax.set_ylabel('Difference [m/s^2]')
         ax.grid(True)
     
     # Collision prediction
@@ -275,8 +265,5 @@ if showplots == 1:
     
     axes[0, 0].legend()
     
-    # Hide unused subplots if any
-    # axes[3, 0].axis('off')
-
     plt.tight_layout()
     plt.show()

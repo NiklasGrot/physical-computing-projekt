@@ -74,9 +74,6 @@ while True:
                 center_point = [cx, cy]
                 object_height = h  # Height of the bounding box
 
-                # Draw the contour and the quadrilateral
-                # cv2.drawContours(frame, [approx], -1, (0, 0, 255), 3)
-
                 # Mark the center point
                 cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
 
